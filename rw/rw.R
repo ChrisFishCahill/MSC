@@ -64,9 +64,8 @@ points(sdr$par.random,
   type = "l", col = "black",
   pch = 16, cex = 2, lwd = 2
 )
-upper <- sdr$par.random + 1.96 * sdr$diag.cov.random
-lower <- sdr$par.random -1.96 * sdr$diag.cov.random
-
+upper = sdr$par.random + 1.96 * sqrt(sdr$diag.cov.random)
+lower = sdr$par.random + -1.96 * sqrt(sdr$diag.cov.random)
 points(upper,
   type = "l", col = "black",
   pch = 16, lwd = 1.5, lty = 2
