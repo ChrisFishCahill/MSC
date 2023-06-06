@@ -1,0 +1,489 @@
+---
+format: 
+  revealjs:
+    theme: simple 
+editor: visual
+highlight-style: kate
+---
+## Simulating and estimating a state-space random walk model in R and TMB
+
+<style>
+.sourceCode{
+  border-width: 0 !important;
+}
+</style>
+
+Christopher L. Cahill
+
+Quantitative Fisheries Center
+
+Michigan State University
+
+## Random walk in R and TMB
+
+Goal:
+
+-   estimate/simulate a state-space model
+
+Steps:
+
+-   A bit of math
+-   Simulate fake data in R
+-   Build estimation model in TMB
+-   Pray that it converges, weep if it does not (how to assess?)
+-   How to deal with missing data
+
+## Math for a state-space random walk
+
+$$\begin{array}{l}\lambda_{i}=\lambda_{i-1}+\eta_{i} \\
+Y_{i}=\lambda_{i}+\varepsilon_{i}\\
+\text{where } i=1 \ldots 50, \eta_{i} \sim N\left(0, \sigma_{1}^{2}\right) \text{, and } \varepsilon_{i} \sim N\left(0, \sigma_{V}^{2}\right) \text{ all independent.}\end{array}$$
+
+## R code for simulating a random walk: `rw.R`
+
+```{R echo = T}
+# set leading parameters 
+years = 1:43
+lam0 = 10 # initial value 
+sd_rw = 1 # stdev of process
+sd_obs = 0.8 # stdev of observations
+lams = rep(NA, length(years)) # true lambdas
+y_obs = rep(NA, length(years)) # observed data
+set.seed(1) # ensure "random" data are same
+
+lams[1] = rnorm(1, lam0, sd_rw) # initialize the stochastic process
+
+# do the random walk, add in process error:
+for(i in 2:length(years)){
+  lams[i] = rnorm(1, lams[i-1], sd_rw) 
+}
+
+# add observation error to true (latent) process:
+y_obs = rnorm(length(lams), lams, sd_obs) 
+
+```
+
+## Visualizing the simulated data
+
+```{R echo = F}
+# fig.align = "center"
+par(mar=c(5,6,4,1)+.1)
+plot(y_obs, type = "p", xlab = "year", 
+     ylab = "value", 
+     cex = 0.75, pch = 3, cex.lab = 1.5,
+     cex.main = 1.7,
+     main = expression(lambda[true] ~ (points) ~ vs. ~ y[obs] ~ ("x's")))
+points(lams, type = "b", col = "steelblue", 
+       pch = 16, cex = 0.75)
+
+```
+
+## TMB code for estimating a random walk: `rw.cpp`
+```{javascript echo = TRUE, eval  = FALSE, style= "font-size: 20.5pt;" }
+#include <TMB.hpp>
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  DATA_VECTOR(y_obs);                             // observed data
+  PARAMETER(ln_sd_rw);                            // log(sd) process
+  PARAMETER(ln_sd_obs);                           // log(sd) observation
+  PARAMETER(lam0);                                // initial state
+  PARAMETER_VECTOR(lams);                         // random effects
+  
+  int n_year = y_obs.size();
+  Type sd_rw = exp(ln_sd_rw);
+  Type sd_obs = exp(ln_sd_obs);
+  
+  // random effects:
+  jnll -= dnorm(lams(0),lam0,sd_rw,true);         // pr(inital state)
+  for(int i=1; i<n_year; i++){
+    jnll -= dnorm(lams(i),lams(i-1),sd_rw,true);  // pr(subsequent states)
+  }
+  
+  // likelihood:
+  for(int i=0; i<n_year; i++){
+    jnll -= dnorm(y_obs(i),lams(i),sd_obs,true);  // pr(observations)  
+  }
+  
+  return jnll;                                    // joint neg log likelihood
+}
+
+```
+
+## Pulling it all together in `rw.R`
+```{r eval=TRUE, echo=TRUE}
+library(TMB)
+compile("rw.cpp")
+
+# create dynamically linked library:
+dyn.load(dynlib("rw"))
+
+# create a tagged data list: 
+data <- list(y_obs = y_obs)
+
+# create a tagged parameter list w/ start values:
+parameters <- list(ln_sd_rw = 0, 
+                   ln_sd_obs = 0,
+                   lam0 = 0,
+                   lams = rep(0, length(data$y_obs))
+)
+
+# create objective function based on template:
+obj <- MakeADFun(data, parameters, random = "lams", DLL= "rw") 
+```
+
+## Pulling it all together cont'd
+```{r eval=TRUE, echo=TRUE}
+
+obj$fn() # return the objective f(x) value
+
+```
+
+## Pulling it all together cont'd
+```{r eval=TRUE, echo=TRUE}
+
+obj$gr() # examine par gradients 
+
+```
+
+## Run the optimization:
+```{r eval=TRUE, echo=TRUE}
+
+opt = nlminb(obj$par, obj$fn, obj$gr)
+
+```
+
+## Get standard deviations 
+```{r eval=TRUE, echo=TRUE}
+
+sdr = sdreport(obj) 
+
+```
+
+## Get standard deviations 
+```{r eval=TRUE, echo=TRUE}
+print(sdr)
+```
+
+```{r eval=TRUE, echo=FALSE}
+mles = as.list(sdr,"Est")
+stds = as.list(sdr,"Std")
+```
+-   Note: may need to apply a bias correction
+-   see `?sdreport`
+-   **Important:** are the SDs too big?
+
+## Are diagnostics consistent with convergence?
+
+```{r eval=TRUE, echo=TRUE}
+final_gradient = obj$gr(opt$par)
+if (any(abs(final_gradient) > 0.001) || sdr$pdHess == FALSE) {
+    message("Model did not converge: check results")
+} else {
+  message("Model diagnostics consistent with convergence")
+}
+```
+```{r eval=TRUE, echo=FALSE}
+print("Model fit consistent with convergence")
+```
+
+-   Why are these reasonable things to check?
+
+## Fits vs. simulated data
+
+```{R echo = F}
+# fig.align = "center"
+par(mar=c(5,6,4,1)+.1)
+plot(y_obs, type = "p", xlab = "year", 
+     ylab = "value", 
+     cex = 0.75, pch = 3, cex.lab = 1.5,
+     cex.main = 1.7, ylim = c(8,16),
+     main = expression(lambda[true] ~ (points) ~ vs. ~ y[obs] ~ ("x's") ~ vs. ~ lambda[est] ~ (black)))
+points(lams, type = "b", col = "steelblue", 
+       pch = 16, cex = 0.75)
+
+points(sdr$par.random, type = "l", col = "black",
+       pch = 16, cex = 2, lwd = 2)
+upper = sdr$par.random + 1.96 * sdr$diag.cov.random 
+lower = sdr$par.random + -1.96 * sdr$diag.cov.random 
+
+points(upper, type = "l", col = "black",
+       pch = 16, lwd = 1.5, lty = 2)
+points(lower, type = "l", col = "black",
+       pch = 16, lwd = 1.5, lty = 2)
+
+```
+## How did we plot those results?
+-   First, look at the structure of the `sdreport()` output 
+```{R eval = T, echo = T}
+
+str(sdr)
+
+```
+
+## How did we plot those results?
+-   How do we get 95% confidence intervals? 
+
+```{R eval = F, echo = T}
+mle = sdr$par.random
+upper_ci = mle + 1.96 * sdr$diag.cov.random 
+lower_ci = mle - 1.96 * sdr$diag.cov.random 
+```
+
+## Break
+
+## Part II: dealing with missing data
+-   Two minor changes to our `rw.cpp` file allows us to deal with missing data
+
+## Dealing with missing data
+- First, we write a custom function to detect NA values and place it at the top of the `rw.cpp`:
+```{javascript echo = TRUE, eval  = FALSE, style= "font-size: 24pt;" }
+#include <TMB.hpp>
+template<class Type>
+// write a custom function to deal with NAs:
+bool is_NA(Type x){
+  return R_IsNA(asDouble(x));
+}
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  DATA_VECTOR(y_obs);                             // observed data
+  PARAMETER(ln_sd_rw);                            // log(sd) process
+  PARAMETER(ln_sd_obs);                           // log(sd) observation
+  PARAMETER(lam0);                                // initial state
+...
+```
+
+## Dealing with missing data
+- Next, we correct the likelihood by adding an if-statement:
+```{javascript echo = TRUE, eval  = FALSE, style= "font-size: 24pt;" }
+... 
+ // random effects:
+  jnll -= dnorm(lams(0),lam0,sd_rw,true);          // pr(inital state)
+  for(int i=1; i<n_year; i++){
+    jnll -= dnorm(lams(i),lams(i-1),sd_rw,true);   // pr(subsequent states)
+  }
+  
+  // likelihood:
+  for(int i=0; i<n_year; i++){
+    if(!is_NA(y_obs(i))){
+      jnll -= dnorm(y_obs(i),lams(i),sd_obs,true); // pr(observations) 
+    }
+  }
+...
+```
+-   Note these aren't the true line numbers in `rw.cpp`
+
+## Remove some data and try it out
+```{r eval=TRUE, echo=TRUE}
+compile("rw.cpp")
+
+# create dynamically linked library:
+dyn.load(dynlib("rw"))
+
+# make some funky data:
+y_obs2 = y_obs
+y_obs2[31:35] = NA
+
+# create a tagged data list: 
+data <- list(y_obs = y_obs2)
+
+# create a tagged parameter list w/ start values:
+parameters <- list(ln_sd_rw = 0, 
+                   ln_sd_obs = 0,
+                   lam0 = 0,
+                   lams = rep(0, length(data$y_obs))
+)
+
+# create objective function based on template:
+obj <- MakeADFun(data, parameters, random = "lams", DLL= "rw") 
+```
+
+## Remove some data and try it out
+```{r eval=TRUE, echo=TRUE}
+opt = nlminb(obj$par, obj$fn, obj$gr)
+sdr = sdreport(obj) 
+
+```
+
+## Visualize the hierarchical model fit - remove data years 31-35
+```{R echo = F}
+# fig.align = "center"
+par(mar=c(5,6,4,1)+.1)
+plot(y_obs, type = "p", xlab = "year", 
+     ylab = "value", 
+     cex = 0.75, pch = 3, cex.lab = 1.5,
+     cex.main = 1.7, ylim = c(8,16),
+     main = expression(lambda[true] ~ (points) ~ vs. ~ y[obs] ~ ("x's") ~ vs. ~ lambda[est] ~ (black)))
+points(lams, type = "b", col = "steelblue", 
+       pch = 16, cex = 0.75)
+
+points(sdr$par.random, type = "l", col = "black",
+       pch = 16, cex = 2, lwd = 2)
+upper = sdr$par.random + 1.96 * sdr$diag.cov.random 
+lower = sdr$par.random + -1.96 * sdr$diag.cov.random 
+
+points(upper, type = "l", col = "black",
+       pch = 16, lwd = 1.5, lty = 2)
+points(lower, type = "l", col = "black",
+       pch = 16, lwd = 1.5, lty = 2)
+
+```
+
+## Visualize the hierarchical model fit - remove last 3 years
+```{R echo = F}
+# fig.align = "center"
+y_obs2 = y_obs
+y_obs2[40:43] = NA # used in a bit
+# create a tagged data list: 
+data <- list(y_obs = y_obs2)
+
+# create a tagged parameter list w/ start values:
+parameters <- list(ln_sd_rw = 0, 
+                   ln_sd_obs = 0,
+                   lam0 = 0,
+                   lams = rep(0, length(data$y_obs))
+)
+
+# create objective function based on template:
+obj <- MakeADFun(data, parameters, random = "lams", DLL= "rw", silent = T) 
+
+opt = nlminb(obj$par, obj$fn, obj$grs)
+sdr = sdreport(obj)
+
+par(mar=c(5,6,4,1)+.1)
+plot(y_obs, type = "p", xlab = "year", 
+     ylab = "value", 
+     cex = 0.75, pch = 3, cex.lab = 1.5,
+     cex.main = 1.7, ylim = c(8,18),
+     main = expression(lambda[true] ~ (points) ~ vs. ~ y[obs] ~ ("x's") ~ vs. ~ lambda[est] ~ (black)))
+points(lams, type = "b", col = "steelblue", 
+       pch = 16, cex = 0.75)
+
+points(sdr$par.random, type = "l", col = "black",
+       pch = 16, cex = 2, lwd = 2)
+upper = sdr$par.random + 1.96 * sdr$diag.cov.random 
+lower = sdr$par.random + -1.96 * sdr$diag.cov.random 
+
+points(upper, type = "l", col = "black",
+       pch = 16, lwd = 1.5, lty = 2)
+points(lower, type = "l", col = "black",
+       pch = 16, lwd = 1.5, lty = 2)
+
+```
+## Visualize the hierarchical model fit - remove first 5 years
+```{R echo = F}
+# fig.align = "center"
+y_obs2 = y_obs
+y_obs2[1:5] = NA # used in a bit
+# create a tagged data list: 
+data <- list(y_obs = y_obs2)
+
+# create a tagged parameter list w/ start values:
+parameters <- list(ln_sd_rw = 0, 
+                   ln_sd_obs = 0,
+                   lam0 = 0,
+                   lams = rep(0, length(data$y_obs))
+)
+
+# create objective function based on template:
+obj <- MakeADFun(data, parameters, random = "lams", DLL= "rw", silent = T) 
+
+opt = nlminb(obj$par, obj$fn, obj$grs)
+sdr = sdreport(obj)
+
+par(mar=c(5,6,4,1)+.1)
+plot(y_obs, type = "p", xlab = "year", 
+     ylab = "value", 
+     cex = 0.75, pch = 3, cex.lab = 1.5,
+     cex.main = 1.7, ylim = c(6,18),
+     main = expression(lambda[true] ~ (points) ~ vs. ~ y[obs] ~ ("x's") ~ vs. ~ lambda[est] ~ (black)))
+points(lams, type = "b", col = "steelblue", 
+       pch = 16, cex = 0.75)
+
+points(sdr$par.random, type = "l", col = "black",
+       pch = 16, cex = 2, lwd = 2)
+upper = sdr$par.random + 1.96 * sdr$diag.cov.random 
+lower = sdr$par.random + -1.96 * sdr$diag.cov.random 
+
+points(upper, type = "l", col = "black",
+       pch = 16, lwd = 1.5, lty = 2)
+points(lower, type = "l", col = "black",
+       pch = 16, lwd = 1.5, lty = 2)
+
+```
+
+## Visualize the hierarchical model fit - data every third year
+```{R echo = F}
+# fig.align = "center"
+
+# sample every third year
+y_obs2 = y_obs
+for(i in 1:length(y_obs2)){
+  if((i %% 3)==0){
+    y_obs2[i] = y_obs[i]
+  } else {
+    y_obs2[i] = NA
+  }
+}
+
+# create a tagged data list: 
+data <- list(y_obs = y_obs2)
+
+# create a tagged parameter list w/ start values:
+parameters <- list(ln_sd_rw = 0, 
+                   ln_sd_obs = 0,
+                   lam0 = 0,
+                   lams = rep(0, length(data$y_obs))
+)
+
+# create objective function based on template:
+obj <- MakeADFun(data, parameters, random = "lams", DLL= "rw", silent = T) 
+
+opt = nlminb(obj$par, obj$fn, obj$grs)
+sdr = sdreport(obj)
+
+par(mar=c(5,6,4,1)+.1)
+plot(y_obs, type = "p", xlab = "year", 
+     ylab = "value", 
+     cex = 0.75, pch = 3, cex.lab = 1.5,
+     cex.main = 1.7, ylim = c(6,18),
+     main = expression(lambda[true] ~ (points) ~ vs. ~ y[obs] ~ ("x's") ~ vs. ~ lambda[est] ~ (black)))
+points(lams, type = "b", col = "steelblue", 
+       pch = 16, cex = 0.75)
+
+points(sdr$par.random, type = "l", col = "black",
+       pch = 16, cex = 2, lwd = 2)
+upper = sdr$par.random + 1.96 * sdr$diag.cov.random 
+lower = sdr$par.random + -1.96 * sdr$diag.cov.random 
+
+points(upper, type = "l", col = "black",
+       pch = 16, lwd = 1.5, lty = 2)
+points(lower, type = "l", col = "black",
+       pch = 16, lwd = 1.5, lty = 2)
+
+```
+## Concluding remarks
+-   We have skipped over a lot of important theory and math.
+-   If *n* was large and we repeated this simulation experiment many times what do we expect? 
+
+## Concluding remarks
+-   We have skipped over a lot of important theory and math.
+-   If *n* was large and we repeated this simulation experiment many times what do we expect to happen? 
+
+-   The maximum likelihood estimator is *consistent.* 
+
+-   $\widehat{\theta}_{\text {mle }} \stackrel{\mathrm{p}}{\rightarrow} \theta_{0} \text {. }$
+
+-   Most of what we have done here can be done entirely within TMB using a special `SIMULATE{}` block. 
+
+-   There are other ways to do this.
+
+## Useful references
+-   Royle and Dorazio. 2008. Hierarchical modeling and inference in Ecology.
+
+-   Kéry and Schaub. 2012. Bayesian population analysis: A hierarchical perspective
+
+-   Holmes, Scheuerell, and Ward.  2021.  Applied Time Series Analysis for Fisheries and Environmental Sciences. 
+https://atsa-es.github.io/atsa-labs/index.html#authors
