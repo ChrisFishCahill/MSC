@@ -6,7 +6,6 @@
 *.o
 *.so
 *.docx
-*.pdf
 *.rds
 *.qmd
 *.html
