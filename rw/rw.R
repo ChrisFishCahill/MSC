@@ -76,3 +76,6 @@ points(lower,
   pch = 16, lwd = 1.5, lty = 2
 )
 
+# profile model
+prof <- tmbprofile(obj, name = c("ln_sd_rw"))
+plot(prof)
