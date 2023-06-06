@@ -75,7 +75,3 @@ points(lower,
   type = "l", col = "black",
   pch = 16, lwd = 1.5, lty = 2
 )
-
-
-a <- 1:120
-b <- a[seq(1, length(a), 6)]
