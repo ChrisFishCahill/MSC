@@ -12,3 +12,4 @@
 rw_files*
 lengths_files*
 switch_case_files*
+*.ipynb
